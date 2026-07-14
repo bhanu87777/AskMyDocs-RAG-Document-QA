@@ -1,0 +1,80 @@
+// AskMyDocs — RAG document Q&A with citations.
+// Problem: teams waste hours hunting through PDFs/manuals for one answer.
+// Solution: upload docs, ask in plain English, get answers with citations to
+// the exact source passage. Embeddings are computed locally (transformers.js),
+// stored as JSON vectors, and searched with cosine similarity.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String     @id @default(cuid())
+  email     String     @unique
+  name      String?
+  password  String // bcrypt hash
+  documents Document[]
+  queries   Query[]
+  createdAt DateTime   @default(now())
+}
+
+// An uploaded source document, split into embedded chunks.
+model Document {
+  id         String     @id @default(cuid())
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  title      String
+  filename   String
+  mimeType   String
+  status     DocStatus  @default(PROCESSING)
+  pageCount  Int        @default(0)
+  chunkCount Int        @default(0)
+  error      String?    @db.Text
+  chunks     Chunk[]
+  queries    Query[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([userId])
+}
+
+// A passage of a document plus its embedding vector (JSON array of floats).
+model Chunk {
+  id         String   @id @default(cuid())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId String
+  idx        Int // order within the document
+  page       Int? // source page (PDFs)
+  content    String   @db.Text
+  embedding  Json // number[] — the vector
+  createdAt  DateTime @default(now())
+
+  @@index([documentId])
+}
+
+// A logged question + generated answer, for history and demoing.
+model Query {
+  id         String    @id @default(cuid())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  document   Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  documentId String?
+  question   String    @db.Text
+  answer     String    @db.Text
+  citations  Json // [{ documentId, title, page, snippet, score }]
+  model      String
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum DocStatus {
+  PROCESSING
+  READY
+  FAILED
+}
