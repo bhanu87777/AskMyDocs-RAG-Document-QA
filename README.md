@@ -4,7 +4,7 @@
 
 ### Chat With Your Documents — RAG Q&A With Citations
 
-*Upload your PDFs, manuals and contracts, ask a question in plain English, and get an answer grounded **only** in your files — with a citation to the exact source passage and page for every claim.*
+*Upload your PDFs, Office files (Word, Excel, PowerPoint), or plain text, ask a question in plain English, and get an answer grounded **only** in your files — with a citation to the exact source passage, page, row or slide for every claim. Scanned/image PDFs are read with OCR.*
 
 <br/>
 
@@ -62,7 +62,7 @@ What makes it interesting is a deliberately **two-stage AI pipeline**:
 ## 📸 Screenshots
 
 ### The workspace — *your document library, scope selector & suggested questions*
-> Upload PDF / TXT / Markdown on the left, choose to ask across all documents or just one, and start with a suggested question.
+> Upload PDF, Word, Excel, PowerPoint, CSV or text on the left, choose to ask across all documents or just one, and start with a suggested question.
 
 <div align="center">
   <img src="assets/screenshots/workspace.png" alt="AskMyDocs chat workspace" width="100%" />
@@ -82,9 +82,10 @@ What makes it interesting is a deliberately **two-stage AI pipeline**:
 | Area | What it does |
 |------|--------------|
 | 🔐 **Auth** | Email/password (bcrypt) via next-auth with JWT sessions. Every document & query is scoped to the signed-in user. |
-| 📤 **Upload & ingest** | PDF, TXT or Markdown. Files are parsed page-by-page, chunked, embedded and indexed — with live `PROCESSING → READY` status. |
+| 📤 **Multi-format ingest** | PDF, Word (`.docx`), Excel (`.xlsx`/`.xls`), PowerPoint (`.pptx`), CSV, TXT & Markdown. Files are parsed into citable units, chunked, embedded and indexed — with live `PROCESSING → READY` status. |
+| 🔍 **OCR fallback** | Scanned / image-only PDFs (no text layer) are transcribed with **Gemini-vision OCR**, so they become fully searchable with page citations. |
 | 🧠 **Ask** | Questions are answered **only** from your documents and streamed token-by-token. |
-| 🔗 **Citations** | Every answer cites its sources: document + page + a **match score** + a snippet, with inline `[n]` badges. |
+| 🔗 **Citations** | Every answer cites its sources: document + location (page / row / slide) + a **match score** + a snippet, with inline `[n]` badges. |
 | 🗂️ **Scope** | Ask across **all** your documents or narrow to a **single** one. |
 | 💸 **Zero-cost core** | Local embeddings + an extractive fallback mean the full RAG loop works offline, free, with no API key. |
 
@@ -93,7 +94,7 @@ What makes it interesting is a deliberately **two-stage AI pipeline**:
 ## 🧠 How the RAG pipeline works *(the interesting part)*
 
 ### Ingestion — `src/lib/ingest.ts`
-1. **Parse** (`parse.ts`) — PDFs are read **page-by-page** (`pdf-parse` v2) so a citation can point at a real page; TXT/MD are read directly.
+1. **Parse** (`parse.ts`) — a router by file type that normalizes every format to the same per-location shape: PDFs **page-by-page** (`pdf-parse` v2) with a **Gemini-vision OCR fallback** for image-only PDFs; Word via `mammoth`; Excel/CSV via SheetJS (**one unit per row**); PowerPoint (**one unit per slide**); TXT/MD directly — so a citation always points at a real page, row or slide.
 2. **Chunk** (`chunk.ts`) — text is split along its **structure** (markdown headings, paragraphs) into ~450-char, topically-coherent chunks.
    > *This matters: fixed-size windows straddle topics and wreck retrieval precision — structure-aware chunks fixed it.*
 3. **Embed** (`embeddings.ts`) — each chunk is embedded **locally** with `all-MiniLM-L6-v2` via transformers.js → a **384-dim** vector.
@@ -122,7 +123,7 @@ What makes it interesting is a deliberately **two-stage AI pipeline**:
 | **ORM** | Prisma 6 |
 | **Auth** | next-auth (credentials, JWT) + bcryptjs |
 | **Embeddings** | transformers.js — `all-MiniLM-L6-v2` (local, 384-dim) |
-| **Parsing** | pdf-parse v2 (per-page) |
+| **Parsing** | pdf-parse v2 (per-page) · mammoth (Word) · xlsx/SheetJS (Excel/CSV) · jszip (PowerPoint) · Gemini-vision OCR (scanned PDFs) |
 | **Answers** | Anthropic Claude (streaming) · Google Gemini (optional) · extractive fallback |
 
 ---
@@ -149,7 +150,7 @@ cp .env.example .env
 #     and optionally add ANTHROPIC_API_KEY or GEMINI_API_KEY
 
 # 4. Create the schema + seed a demo user and sample handbook
-npx prisma migrate dev
+npx prisma db push       # syncs the PostgreSQL schema (the committed migration is MySQL-dialect)
 npm run db:seed          # demo user + ingests a sample employee handbook
 
 # 5. Run the dev server
@@ -171,7 +172,7 @@ Then sign in with the demo account: **`demo@askmydocs.app` / `demo1234`**.
 | `npm run start` | Serve the production build |
 | `npm run lint` | Run ESLint |
 | `npm run db:seed` | Seed a demo user and ingest the sample handbook |
-| `npx prisma migrate dev` | Apply migrations to the database |
+| `npx prisma db push` | Create/sync the PostgreSQL schema |
 | `npx prisma studio` | Browse the data in Prisma Studio |
 
 ---
@@ -198,7 +199,7 @@ AskMyDocs-RAG-Document-QA/
 │   │   └── layout.tsx
 │   ├── components/           # Workspace · ChatPanel · DocumentLibrary · Navbar
 │   └── lib/                  # the RAG pipeline
-│       ├── ingest · parse · chunk        # ingestion
+│       ├── ingest · parse · ocr · chunk  # multi-format ingestion (+ OCR fallback)
 │       ├── embeddings · similarity        # local vectors + cosine ranking
 │       ├── retrieve · answer              # top-5 retrieval + grounded generation
 │       └── auth · session · prisma
@@ -217,7 +218,8 @@ AskMyDocs-RAG-Document-QA/
 - [ ] **Native vector search** — store vectors in PostgreSQL's `pgvector` column with an ANN index for scale
 - [ ] **Inline PDF viewer** — highlight the exact cited sentence in the source document
 - [ ] **Multi-turn conversations** — follow-up questions with conversation context
-- [ ] **More formats** — DOCX, HTML and pasted-text ingestion
+- [x] **More formats** — Word, Excel, PowerPoint & CSV ingestion, plus OCR for scanned PDFs ✅
+- [ ] **Even more input** — HTML pages and pasted-text ingestion
 - [ ] **Reranking** — a cross-encoder re-rank pass over the top-k for sharper answers
 - [ ] **Team workspaces** — shared document libraries with role-based access
 - [ ] **Test suite** — unit tests for `chunk.ts` / `similarity.ts` + integration tests on `/api/ask`

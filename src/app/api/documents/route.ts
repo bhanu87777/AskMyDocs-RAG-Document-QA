@@ -19,7 +19,36 @@ export async function GET() {
 }
 
 const MAX_BYTES = 15 * 1024 * 1024; // 15 MB
-const ALLOWED = ["application/pdf", "text/plain", "text/markdown"];
+
+// Supported by extension — Office MIME types vary too much across browsers/OSes
+// to validate reliably, so we key off the extension and let parse.ts route it.
+const ALLOWED_EXT = new Set([
+  "pdf",
+  "txt",
+  "md",
+  "markdown",
+  "csv",
+  "docx",
+  "xlsx",
+  "xls",
+  "pptx",
+]);
+
+function extOf(name: string): string {
+  return (name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "").toLowerCase();
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  csv: "text/csv",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: "application/vnd.ms-excel",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
 
 // POST /api/documents — upload a file and run the RAG ingestion pipeline.
 export async function POST(req: Request) {
@@ -36,11 +65,10 @@ export async function POST(req: Request) {
   }
 
   const name = file.name || "document";
-  const isTextExt = /\.(txt|md|markdown)$/i.test(name);
-  const isPdfExt = /\.pdf$/i.test(name);
-  if (!ALLOWED.includes(file.type) && !isTextExt && !isPdfExt) {
+  const ext = extOf(name);
+  if (!ALLOWED_EXT.has(ext)) {
     return NextResponse.json(
-      { error: "Only PDF, TXT, and Markdown files are supported" },
+      { error: "Supported: PDF, Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx), CSV, TXT, Markdown" },
       { status: 400 },
     );
   }
@@ -53,7 +81,7 @@ export async function POST(req: Request) {
       userId,
       title,
       filename: name,
-      mimeType: file.type || (isPdfExt ? "application/pdf" : "text/plain"),
+      mimeType: file.type || MIME_BY_EXT[ext] || "application/octet-stream",
       status: "PROCESSING",
     },
   });

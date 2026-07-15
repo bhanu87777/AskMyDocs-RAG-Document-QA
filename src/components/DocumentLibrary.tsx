@@ -78,14 +78,14 @@ export function DocumentLibrary({
           <>
             <div className="text-2xl">＋</div>
             <div className="mt-1 font-medium">Upload a document</div>
-            <div className="text-xs text-muted">PDF, TXT, or Markdown</div>
+            <div className="text-xs text-muted">PDF, Word, Excel, PowerPoint, CSV, TXT, MD</div>
           </>
         )}
       </button>
       <input
         ref={fileRef}
         type="file"
-        accept=".pdf,.txt,.md,.markdown,application/pdf,text/plain,text/markdown"
+        accept=".pdf,.txt,.md,.markdown,.csv,.docx,.xlsx,.xls,.pptx"
         onChange={handleFile}
         className="hidden"
       />
