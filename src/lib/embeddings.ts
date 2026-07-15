@@ -1,42 +1,94 @@
-import { pipeline, env, type FeatureExtractionPipeline } from "@xenova/transformers";
+// Embeddings via Google's Gemini API (gemini-embedding-001, 768-dim).
+//
+// We compute embeddings through a hosted API rather than a local model
+// (transformers.js + onnxruntime) so the app runs on Vercel's serverless
+// functions without bundling the ~200 MB ONNX runtime — which exceeds Vercel's
+// function size limit. Reuses the same free GEMINI_API_KEY the answer/OCR paths
+// use. Documents and queries are embedded with the matching RAG task types.
 
-// Run the embedding model locally — no API key, no per-call cost. We use
-// all-MiniLM-L6-v2 (384-dim), a small, fast sentence-embedding model. The model
-// is downloaded from the Hugging Face hub once and cached on disk.
-env.allowLocalModels = false;
+const EMBED_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta";
+export const EMBED_MODEL = "gemini-embedding-001";
+// gemini-embedding-001 defaults to 3072 dims but supports Matryoshka
+// truncation; 768 keeps stored JSON vectors small. cosine() normalizes both
+// sides, so the (un-normalized) truncated vectors compare correctly.
+export const EMBED_DIM = 768;
 
-export const EMBED_MODEL = "Xenova/all-MiniLM-L6-v2";
-export const EMBED_DIM = 384;
+// Modest concurrency: fast enough for a document's worth of chunks while
+// staying under the free tier's per-minute request limits.
+const CONCURRENCY = 4;
 
-// Cache the pipeline across hot-reloads / requests.
-const globalForEmb = globalThis as unknown as {
-  extractor?: Promise<FeatureExtractionPipeline>;
-};
+type TaskType = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 
-function getExtractor(): Promise<FeatureExtractionPipeline> {
-  if (!globalForEmb.extractor) {
-    globalForEmb.extractor = pipeline("feature-extraction", EMBED_MODEL);
+function apiKey(): string {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error(
+      "GEMINI_API_KEY is required to compute embeddings. Set it in your " +
+        "environment (Google AI Studio, free — no credit card).",
+    );
   }
-  return globalForEmb.extractor;
+  return key;
 }
 
-// Embed a batch of texts into normalized vectors (mean-pooled).
-export async function embed(texts: string[]): Promise<number[][]> {
-  if (texts.length === 0) return [];
-  const extractor = await getExtractor();
+async function embedText(text: string, taskType: TaskType, key: string): Promise<number[]> {
+  const res = await fetch(
+    `${EMBED_ENDPOINT}/models/${EMBED_MODEL}:embedContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        model: `models/${EMBED_MODEL}`,
+        content: { parts: [{ text }] },
+        taskType,
+        outputDimensionality: EMBED_DIM,
+      }),
+    },
+  );
 
-  // Process in small batches to keep memory bounded on large documents.
-  const BATCH = 32;
-  const vectors: number[][] = [];
-  for (let i = 0; i < texts.length; i += BATCH) {
-    const batch = texts.slice(i, i + BATCH);
-    const output = await extractor(batch, { pooling: "mean", normalize: true });
-    vectors.push(...(output.tolist() as number[][]));
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(
+      `Embedding failed (Gemini ${res.status}): ${detail.slice(0, 300)}`,
+    );
   }
+
+  const json = await res.json();
+  const values = json?.embedding?.values as number[] | undefined;
+  if (!values || values.length !== EMBED_DIM) {
+    throw new Error(
+      `Embedding returned unexpected shape (got ${values?.length ?? 0} dims).`,
+    );
+  }
+  return values;
+}
+
+// Embed a batch of texts into vectors, preserving input order. Runs a bounded
+// number of requests concurrently.
+export async function embed(
+  texts: string[],
+  taskType: TaskType = "RETRIEVAL_DOCUMENT",
+): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  const key = apiKey();
+
+  const vectors: number[][] = new Array(texts.length);
+  let next = 0;
+  async function worker() {
+    while (next < texts.length) {
+      const i = next++;
+      vectors[i] = await embedText(texts[i], taskType, key);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, texts.length) }, worker),
+  );
   return vectors;
 }
 
-export async function embedOne(text: string): Promise<number[]> {
-  const [vec] = await embed([text]);
+export async function embedOne(
+  text: string,
+  taskType: TaskType = "RETRIEVAL_QUERY",
+): Promise<number[]> {
+  const [vec] = await embed([text], taskType);
   return vec;
 }
