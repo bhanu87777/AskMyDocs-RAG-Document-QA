@@ -1,5 +1,5 @@
 import type { PageText } from "./chunk";
-import { GEMINI_MODEL } from "./answer";
+import { GEMINI_MODELS } from "./answer";
 
 // OCR fallback for PDFs with no extractable text layer (scanned pages, or
 // "printed to PDF" documents whose text is rendered as vector/image glyphs).
@@ -25,29 +25,41 @@ export async function ocrPdfWithGemini(buffer: Buffer): Promise<PageText[]> {
     );
   }
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType: "application/pdf", data: buffer.toString("base64") } },
-              { text: OCR_PROMPT },
-            ],
-          },
-        ],
-        generationConfig: { temperature: 0, maxOutputTokens: 8192 },
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`OCR failed (Gemini ${res.status}): ${detail.slice(0, 300)}`);
+  // Free-tier daily quotas are per model, so on quota/availability errors
+  // (429/404/503) the same request is retried on the next model in
+  // GEMINI_MODELS before giving up.
+  let res: Response | null = null;
+  let lastError = "";
+  for (const candidate of GEMINI_MODELS) {
+    const attempt = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${candidate}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType: "application/pdf", data: buffer.toString("base64") } },
+                { text: OCR_PROMPT },
+              ],
+            },
+          ],
+          generationConfig: { temperature: 0, maxOutputTokens: 8192 },
+        }),
+      },
+    );
+    if (attempt.ok) {
+      res = attempt;
+      break;
+    }
+    const detail = await attempt.text().catch(() => "");
+    lastError = `OCR failed (Gemini ${attempt.status}, ${candidate}): ${detail.slice(0, 300)}`;
+    if (![429, 404, 503].includes(attempt.status)) break;
+  }
+  if (!res) {
+    throw new Error(lastError || "OCR failed: no Gemini model available");
   }
 
   const json = await res.json();

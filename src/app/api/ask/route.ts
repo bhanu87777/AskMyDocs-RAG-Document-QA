@@ -5,7 +5,7 @@ import { retrieve } from "@/lib/retrieve";
 import {
   ANSWER_DELIMITER,
   ANSWER_MODEL,
-  GEMINI_MODEL,
+  GEMINI_MODELS,
   SYSTEM_PROMPT,
   extractiveAnswer,
   toCitations,
@@ -66,21 +66,34 @@ export async function POST(req: Request) {
         } else if (geminiKey && chunks.length > 0) {
           // Gemini free-tier path. Streams Server-Sent Events; each `data:` line
           // carries a JSON chunk with candidates[0].content.parts[].text.
-          model = GEMINI_MODEL;
-          const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "x-goog-api-key": geminiKey },
-              body: JSON.stringify({
-                systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-                contents: [{ role: "user", parts: [{ text: userPrompt(question, chunks) }] }],
-                generationConfig: { maxOutputTokens: 4096 },
-              }),
-            },
-          );
-          if (!res.ok || !res.body) {
-            throw new Error(`Gemini ${res.status}: ${await res.text().catch(() => "")}`);
+          // Free-tier daily quotas are per model, so on quota/availability
+          // errors (429/404/503) the same request is retried on the next
+          // model in GEMINI_MODELS before giving up.
+          let res: Response | null = null;
+          let lastError = "";
+          for (const candidate of GEMINI_MODELS) {
+            const attempt = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${candidate}:streamGenerateContent?alt=sse`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-goog-api-key": geminiKey },
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                  contents: [{ role: "user", parts: [{ text: userPrompt(question, chunks) }] }],
+                  generationConfig: { maxOutputTokens: 4096 },
+                }),
+              },
+            );
+            if (attempt.ok && attempt.body) {
+              res = attempt;
+              model = candidate;
+              break;
+            }
+            lastError = `Gemini ${attempt.status} (${candidate}): ${await attempt.text().catch(() => "")}`;
+            if (![429, 404, 503].includes(attempt.status)) break;
+          }
+          if (!res || !res.body) {
+            throw new Error(lastError || "Gemini: no model available");
           }
 
           const reader = res.body.getReader();
@@ -121,7 +134,7 @@ export async function POST(req: Request) {
       } catch (err) {
         const msg =
           "\n\n_(The AI service errored, so here are the raw passages instead.)_\n\n" +
-          extractiveAnswer(chunks);
+          extractiveAnswer(chunks, "**Most relevant passages I retrieved:**");
         answer += msg;
         controller.enqueue(encoder.encode(msg));
         console.error("ask stream error:", err);

@@ -8,6 +8,19 @@ export const ANSWER_MODEL = process.env.ANSWER_MODEL || "claude-sonnet-5";
 // "gemini-flash-latest" tracks the current free flash model.
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 
+// Free-tier daily quotas are counted PER MODEL, so each entry below is a
+// separate quota bucket. When the preferred model is exhausted (429) or
+// unavailable (404/503), callers retry the same request on the next one
+// before falling back to the extractive answer.
+export const GEMINI_MODELS = [
+  ...new Set([
+    GEMINI_MODEL,
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-2.5-flash-lite",
+  ]),
+];
+
 export interface Citation {
   n: number;
   documentId: string;
@@ -46,15 +59,19 @@ Rules:
 - If the answer isn't in the sources, say: "I couldn't find that in your documents." Do not guess.
 - Be concise and direct.`;
 
-// Fallback when no ANTHROPIC_API_KEY is set: return the most relevant passages
-// verbatim so the app still demonstrates end-to-end retrieval.
-export function extractiveAnswer(chunks: RetrievedChunk[]): string {
+// Fallback when no AI key is set (or the AI service errored): return the most
+// relevant passages verbatim so the app still demonstrates end-to-end retrieval.
+export function extractiveAnswer(
+  chunks: RetrievedChunk[],
+  header = "**No AI key configured — showing the most relevant passages I retrieved:**",
+): string {
   if (chunks.length === 0) {
     return "I couldn't find anything relevant in your documents.";
   }
   const top = chunks.slice(0, 3);
   return (
-    "**No AI key configured — showing the most relevant passages I retrieved:**\n\n" +
+    header +
+    "\n\n" +
     top
       .map((c, i) => `> [${i + 1}] ${c.content}`)
       .join("\n\n")
